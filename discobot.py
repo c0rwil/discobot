@@ -4,9 +4,8 @@ from discord.ext import commands
 import yt_dlp as youtube_dl
 import asyncio
 from dotenv import load_dotenv
-import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable
+from typing import Callable, List, Dict
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,17 +41,11 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='::', intents=intents)
 
 # Song queue to manage the songs
-song_queue = []
-shuffle_mode = False
-shuffle_results = []
-current_shuffle_index = 0
+song_queue: List[Dict] = []
 volume_level = 1.0  # Default volume level (100%)
+paused = False
+crossfade_seconds = 5  # Length of crossfade in seconds
 executor = ThreadPoolExecutor(max_workers=5)
-
-
-def shorten_url(url: str) -> str:
-    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", url)
-    return f"https://youtu.be/{match.group(1)}" if match else url
 
 
 async def run_blocking_task(task: Callable, *args, **kwargs):
@@ -93,32 +86,55 @@ async def play(ctx, *, query: str):
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=False)
             if 'entries' in info:
-                url = info['entries'][0]['url']
-            else:
-                url = info['url']
+                results = info['entries'][:5]
+                message = "**Select a song by reacting:**\n"
+                for i, entry in enumerate(results, 1):
+                    message += f"{i}. **{entry['title']}** by **{entry['uploader']}** ({entry['duration']} seconds)\n"
+                message += "\nReact with 1️⃣ - 5️⃣ to choose a song."
+                vote_msg = await ctx.send(message)
 
-        song_queue.append(url)
-        await ctx.send(f"Added to queue: {shorten_url(url)}")
-        if not ctx.voice_client.is_playing():
-            await play_next(ctx)
+                # Add number reactions
+                for i in range(1, 6):
+                    await vote_msg.add_reaction(f"{i}\u20E3")
+
+                # Wait for the requester's reaction
+                def check(reaction, user):
+                    return (
+                        reaction.message.id == vote_msg.id and
+                        user == ctx.author and
+                        str(reaction.emoji) in [f"{i}\u20E3" for i in range(1, 6)]
+                    )
+
+                reaction, _ = await bot.wait_for('reaction_add', check=check)
+                selected_index = int(reaction.emoji[0]) - 1
+                selected_song = results[selected_index]
+                song_queue.append(selected_song)
+                await ctx.send(f"Added to queue: **{selected_song['title']}** by **{selected_song['uploader']}**")
+                if not ctx.voice_client.is_playing():
+                    await play_next(ctx)
+            else:
+                song_queue.append(info)
+                await ctx.send(f"Added to queue: **{info['title']}** by **{info['uploader']}**")
+                if not ctx.voice_client.is_playing():
+                    await play_next(ctx)
     except Exception as e:
         await ctx.send("Error while processing the request.")
         print(f"Error: {e}")
 
 
 async def play_next(ctx):
-    if song_queue:
-        url = song_queue.pop(0)
-        await play_song(ctx, url)
+    if song_queue and not paused:
+        song = song_queue.pop(0)
+        await play_song(ctx, song)
 
 
-async def play_song(ctx, url):
+async def play_song(ctx, song):
+    global paused
+    paused = False
+
     async with ctx.typing():
-        loop = asyncio.get_running_loop()
-        vc = ctx.voice_client
-
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(song['url'], download=False)
             audio_url = next((f['url'] for f in info['formats'] if f.get('acodec') != 'none'), None)
             if not audio_url:
                 await ctx.send("Error: No valid audio found.")
@@ -127,8 +143,46 @@ async def play_song(ctx, url):
         source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
         source = discord.PCMVolumeTransformer(source, volume=volume_level)
 
-        vc.play(source, after=lambda _: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
-        await ctx.send(f"Now playing: {shorten_url(url)}")
+        # Crossfade logic
+        def after_playing(_):
+            if song_queue:
+                next_song = song_queue[0]
+                asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+                if len(song_queue) > 1:
+                    asyncio.run_coroutine_threadsafe(
+                        ctx.send(f"🎶 Up next: **{next_song['title']}** by **{next_song['uploader']}**"), bot.loop
+                    )
+
+        ctx.voice_client.play(source, after=after_playing)
+        await ctx.send(f"🎶 Now playing: **{song['title']}** by **{song['uploader']}** ({song['duration']} seconds)")
+
+        # Crossfade into the next song
+        song_duration = int(song.get('duration', 0))
+        if song_duration > crossfade_seconds and song_queue:
+            await asyncio.sleep(max(0, song_duration - crossfade_seconds))
+            await play_next(ctx)
+
+
+@bot.command()
+async def pause(ctx):
+    global paused
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        paused = True
+        await ctx.send("⏸️ Paused playback.")
+    else:
+        await ctx.send("No song is currently playing.")
+
+
+@bot.command()
+async def resume(ctx):
+    global paused
+    if ctx.voice_client and paused:
+        ctx.voice_client.resume()
+        paused = False
+        await ctx.send("▶️ Resumed playback.")
+    else:
+        await ctx.send("No song is currently paused.")
 
 
 @bot.command()
@@ -143,8 +197,11 @@ async def skip(ctx):
 @bot.command()
 async def queue(ctx):
     if song_queue:
-        queue_list = '\n'.join([shorten_url(song) for song in song_queue])
-        await ctx.send(f"**Song Queue:**\n{queue_list}")
+        queue_list = '\n'.join(
+            [f"{idx + 1}. **{song['title']}** by **{song['uploader']}** ({song['duration']} seconds)"
+             for idx, song in enumerate(song_queue)]
+        )
+        await ctx.send(f"**Current Queue:**\n{queue_list}")
     else:
         await ctx.send("Queue is empty.")
 
@@ -156,32 +213,9 @@ async def volume(ctx, level: int):
         volume_level = level / 100
         if ctx.voice_client and ctx.voice_client.source:
             ctx.voice_client.source.volume = volume_level
-        await ctx.send(f"Volume set to {level}%")
+        await ctx.send(f"🔊 Volume set to {level}%")
     else:
         await ctx.send("Volume must be between 0 and 100.")
-
-
-@bot.command()
-async def shuffle(ctx):
-    global shuffle_mode, shuffle_results, current_shuffle_index
-    if not song_queue:
-        await ctx.send("The queue is empty.")
-        return
-    shuffle_mode = True
-    shuffle_results = song_queue[:]
-    current_shuffle_index = 0
-    await ctx.send("Shuffle mode activated.")
-    await play_next(ctx)
-
-
-@bot.command()
-async def shufflestop(ctx):
-    global shuffle_mode
-    if not shuffle_mode:
-        await ctx.send("Shuffle mode is not active.")
-        return
-    shuffle_mode = False
-    await ctx.send("Shuffle mode stopped.")
 
 
 @bot.event
