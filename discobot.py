@@ -45,7 +45,7 @@ song_queue: List[Dict] = []
 volume_level = 1.0  # Default volume level (100%)
 paused = False
 crossfade_seconds = 5  # Length of crossfade in seconds
-executor = ThreadPoolExecutor(max_workers=5)
+executor = ThreadPoolExecutor(max_workers=2)
 
 
 async def run_blocking_task(task: Callable, *args, **kwargs):
@@ -83,43 +83,72 @@ async def play(ctx, *, query: str):
             return
 
     try:
+        ydl_opts['extract_flat'] = True  # Ensure we get a list of results
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info:
-                results = info['entries'][:5]
-                message = "**Select a song by reacting:**\n"
-                for i, entry in enumerate(results, 1):
-                    message += f"{i}. **{entry['title']}** by **{entry['uploader']}** ({entry['duration']} seconds)\n"
-                message += "\nReact with 1️⃣ - 5️⃣ to choose a song."
-                vote_msg = await ctx.send(message)
+            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
 
-                # Add number reactions
-                for i in range(1, 6):
+            # Extract up to 5 results
+            results = info.get('entries', [])[:5]
+
+            if not results:
+                await ctx.send("No results found.")
+                return
+
+            message = "**Select a song by reacting:**\n"
+            for i, entry in enumerate(results, 1):
+                title = entry.get('title', 'Unknown Title')
+                uploader = entry.get('uploader', 'Unknown Uploader')
+                duration = entry.get('duration', 'Unknown Duration')
+                message += f"{i}. **{title}** by **{uploader}** ({duration} seconds)\n"
+            message += "\nReact with 1️⃣ - 5️⃣ to choose a song."
+            vote_msg = await ctx.send(message)
+
+            # Add number reactions concurrently
+            async def add_reactions():
+                for i in range(1, len(results) + 1):
                     await vote_msg.add_reaction(f"{i}\u20E3")
 
-                # Wait for the requester's reaction
-                def check(reaction, user):
-                    return (
-                        reaction.message.id == vote_msg.id and
-                        user == ctx.author and
-                        str(reaction.emoji) in [f"{i}\u20E3" for i in range(1, 6)]
-                    )
+            # Start adding reactions and listen for votes at the same time
+            await asyncio.gather(
+                add_reactions(),
+                handle_reaction(ctx, vote_msg, results)
+            )
 
-                reaction, _ = await bot.wait_for('reaction_add', check=check)
-                selected_index = int(reaction.emoji[0]) - 1
-                selected_song = results[selected_index]
-                song_queue.append(selected_song)
-                await ctx.send(f"Added to queue: **{selected_song['title']}** by **{selected_song['uploader']}**")
-                if not ctx.voice_client.is_playing():
-                    await play_next(ctx)
-            else:
-                song_queue.append(info)
-                await ctx.send(f"Added to queue: **{info['title']}** by **{info['uploader']}**")
-                if not ctx.voice_client.is_playing():
-                    await play_next(ctx)
     except Exception as e:
         await ctx.send("Error while processing the request.")
         print(f"Error: {e}")
+
+
+async def handle_reaction(ctx, vote_msg, results):
+    try:
+        def check(reaction, user):
+            return (
+                    reaction.message.id == vote_msg.id and
+                    user == ctx.author and
+                    str(reaction.emoji) in [f"{i}\u20E3" for i in range(1, len(results) + 1)]
+            )
+
+        reaction, _ = await bot.wait_for('reaction_add', check=check)
+        selected_index = int(reaction.emoji[0]) - 1
+        selected_song = results[selected_index]
+
+        # Convert to full URL for playback
+        song_info = {
+            'url': f"https://www.youtube.com/watch?v={selected_song['id']}",
+            'title': selected_song['title'],
+            'uploader': selected_song['uploader'],
+            'duration': selected_song.get('duration', 'Unknown Duration')
+        }
+
+        song_queue.append(song_info)
+        await ctx.send(f"Added to queue: **{song_info['title']}** by **{song_info['uploader']}**")
+
+        # Play if nothing is currently playing
+        if not ctx.voice_client.is_playing():
+            await play_next(ctx)
+
+    except asyncio.TimeoutError:
+        await ctx.send("No selection made in time. Please try again.")
 
 
 async def play_next(ctx):
