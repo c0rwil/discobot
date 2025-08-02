@@ -4,7 +4,6 @@ from discord.ext import commands
 import yt_dlp as youtube_dl
 import asyncio
 from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, List, Dict
 
 # Load environment variables
@@ -46,13 +45,12 @@ bot = commands.Bot(command_prefix='::', intents=intents)
 song_queue: List[Dict] = []
 volume_level = 1.0
 paused = False
-executor = ThreadPoolExecutor(max_workers=2)
 current_song: Dict | None = None
 
 
 async def run_blocking_task(task: Callable, *args, **kwargs):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(executor, task, *args, **kwargs)
+    return await loop.run_in_executor(None, task, *args, **kwargs)
 
 
 @bot.command()
@@ -105,20 +103,20 @@ async def play(ctx, *, query: str):
         message += "\nReact with 1️⃣ - 5️⃣ to choose a song."
         vote_msg = await ctx.send(message)
 
-        for i in range(len(results)):
-            await vote_msg.add_reaction(f"{i + 1}\u20E3")
+        number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+        for emoji in number_emojis[:len(results)]:
+            await vote_msg.add_reaction(emoji)
 
         def check(reaction, user):
             return (
-                user == ctx.author and
-                reaction.message.id == vote_msg.id and
-                str(reaction.emoji) in [f"{i + 1}\u20E3" for i in range(len(results))]
+                user == ctx.author
+                and reaction.message.id == vote_msg.id
+                and str(reaction.emoji) in number_emojis[:len(results)]
             )
 
         reaction, _ = await bot.wait_for('reaction_add', check=check, timeout=20.0)
 
-        emoji_map = {'1️⃣': 0, '2️⃣': 1, '3️⃣': 2, '4️⃣': 3, '5️⃣': 4}
-        selected_index = emoji_map.get(str(reaction.emoji), int(str(reaction.emoji)[0]) - 1)
+        selected_index = number_emojis.index(str(reaction.emoji))
         selected_song = results[selected_index]
 
         song_info = {
