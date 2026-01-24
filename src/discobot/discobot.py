@@ -11,25 +11,27 @@ from typing import Callable
 
 # Load environment variables from .env file
 load_dotenv()
-TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Configuration options for yt-dlp to download and extract audio
 ydl_opts = {
-    'format': 'bestaudio/best',
-    'default_search': 'ytsearch',
-    'quiet': True,
-    'extract_flat': False,
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'opus',
-        'preferredquality': '96',
-    }],
+    "format": "bestaudio/best",
+    "default_search": "ytsearch",
+    "quiet": True,
+    "extract_flat": False,
+    "postprocessors": [
+        {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "opus",
+            "preferredquality": "96",
+        }
+    ],
 }
 
 # FFmpeg options for processing audio streams
 FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn",
 }
 
 # Define which intents are needed for the bot
@@ -40,7 +42,7 @@ intents.voice_states = True
 intents.message_content = True
 
 # Initialize bot with defined command prefix and intents
-bot = commands.Bot(command_prefix='::', intents=intents)
+bot = commands.Bot(command_prefix="::", intents=intents)
 
 # Song queue to manage the songs
 song_queue = []
@@ -73,25 +75,33 @@ async def fetch_info(query: str) -> dict:
 
 
 def build_queue_entries(info: dict) -> list[dict]:
-    if 'entries' not in info:
-        return [{
-            'url': info.get('webpage_url') or info.get('url'),
-            'title': info.get('title') or 'Unknown title',
-        }]
+    if "entries" not in info:
+        return [
+            {
+                "url": info.get("webpage_url") or info.get("url"),
+                "title": info.get("title") or "Unknown title",
+            }
+        ]
 
-    entries = [entry for entry in info['entries'] if entry]
-    if info.get('_type') == 'playlist':
-        return [{
-            'url': entry.get('webpage_url') or entry.get('url'),
-            'title': entry.get('title') or 'Unknown title',
-        } for entry in entries if entry.get('webpage_url') or entry.get('url')]
+    entries = [entry for entry in info["entries"] if entry]
+    if info.get("_type") == "playlist":
+        return [
+            {
+                "url": entry.get("webpage_url") or entry.get("url"),
+                "title": entry.get("title") or "Unknown title",
+            }
+            for entry in entries
+            if entry.get("webpage_url") or entry.get("url")
+        ]
 
     if entries:
         entry = entries[0]
-        return [{
-            'url': entry.get('webpage_url') or entry.get('url'),
-            'title': entry.get('title') or 'Unknown title',
-        }]
+        return [
+            {
+                "url": entry.get("webpage_url") or entry.get("url"),
+                "title": entry.get("title") or "Unknown title",
+            }
+        ]
     return []
 
 
@@ -119,7 +129,7 @@ async def ensure_voice(ctx) -> bool:
 
     channel = ctx.author.voice.channel
     last_error = None
-    for attempt in range(VOICE_CONNECT_RETRIES):
+    for _attempt in range(VOICE_CONNECT_RETRIES):
         try:
             await channel.connect(reconnect=True, timeout=VOICE_CONNECT_TIMEOUT, self_deaf=True)
             return True
@@ -137,6 +147,7 @@ async def ensure_voice(ctx) -> bool:
                     last_error = f"Voice websocket closed ({exc.code}); retry failed: {retry_exc}"
         except Exception as exc:
             last_error = str(exc)
+
         if ctx.voice_client:
             await ctx.voice_client.disconnect(force=True)
         await asyncio.sleep(VOICE_CONNECT_DELAY)
@@ -178,6 +189,7 @@ async def play(ctx, *, query: str):
             await ctx.send(f"Added to queue: {entries[0]['title']} ({shorten_url(entries[0]['url'])})")
         else:
             await ctx.send(f"Added {len(entries)} tracks to the queue.")
+
         if not ctx.voice_client.is_playing():
             await play_next(ctx)
     except Exception as e:
@@ -205,10 +217,10 @@ async def play_song(ctx, entry: dict):
     async with ctx.typing():
         vc = ctx.voice_client
 
-        info = await fetch_info(entry['url'])
-        audio_url = info.get('url')
+        info = await fetch_info(entry["url"])
+        audio_url = info.get("url")
         if not audio_url:
-            audio_url = next((f['url'] for f in info.get('formats', []) if f.get('acodec') != 'none'), None)
+            audio_url = next((f["url"] for f in info.get("formats", []) if f.get("acodec") != "none"), None)
         if not audio_url:
             await ctx.send("Error: No valid audio found.")
             return
@@ -232,7 +244,7 @@ async def skip(ctx):
 @bot.command()
 async def queue(ctx):
     if song_queue:
-        queue_list = '\n'.join([f"{song['title']} ({shorten_url(song['url'])})" for song in song_queue])
+        queue_list = "\n".join([f"{song['title']} ({shorten_url(song['url'])})" for song in song_queue])
         await ctx.send(f"**Song Queue:**\n{queue_list}")
     else:
         await ctx.send("Queue is empty.")
@@ -279,7 +291,10 @@ async def shufflestop(ctx):
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
+    print(f"Logged in as {bot.user.name}")
 
 
-bot.run(TOKEN)
+def main() -> None:
+    if not TOKEN:
+        raise RuntimeError("DISCORD_BOT_TOKEN is not set (check your .env)")
+    bot.run(TOKEN)
