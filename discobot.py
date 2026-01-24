@@ -48,6 +48,8 @@ shuffle_mode = False
 shuffle_results = []
 volume_level = 1.0  # Default volume level (100%)
 executor = ThreadPoolExecutor(max_workers=5)
+VOICE_CONNECT_RETRIES = 3
+VOICE_CONNECT_DELAY = 1.5
 
 
 def shorten_url(url: str) -> str:
@@ -93,14 +95,7 @@ def build_queue_entries(info: dict) -> list[dict]:
 
 @bot.command()
 async def join(ctx):
-    if ctx.author.voice:
-        channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            await channel.connect()
-        else:
-            await ctx.voice_client.move_to(channel)
-    else:
-        await ctx.send("You need to be in a voice channel.")
+    await ensure_voice(ctx)
 
 
 @bot.command()
@@ -113,12 +108,8 @@ async def leave(ctx):
 
 @bot.command()
 async def play(ctx, *, query: str):
-    if ctx.voice_client is None:
-        if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
-        else:
-            await ctx.send("You need to be in a voice channel.")
-            return
+    if not await ensure_voice(ctx):
+        return
 
     try:
         info = await fetch_info(query)
