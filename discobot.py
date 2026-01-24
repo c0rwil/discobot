@@ -50,6 +50,8 @@ volume_level = 1.0  # Default volume level (100%)
 executor = ThreadPoolExecutor(max_workers=5)
 VOICE_CONNECT_RETRIES = 3
 VOICE_CONNECT_DELAY = 1.5
+VOICE_CONNECT_TIMEOUT = 10
+VOICE_CONNECT_POLL_INTERVAL = 0.5
 
 
 def shorten_url(url: str) -> str:
@@ -95,7 +97,21 @@ def build_queue_entries(info: dict) -> list[dict]:
 
 async def ensure_voice(ctx) -> bool:
     if ctx.voice_client and ctx.voice_client.is_connected():
+        if ctx.author.voice and ctx.author.voice.channel != ctx.voice_client.channel:
+            await ctx.voice_client.move_to(ctx.author.voice.channel)
         return True
+
+    if ctx.voice_client:
+        is_connecting = getattr(ctx.voice_client, "is_connecting", None)
+        if callable(is_connecting) and is_connecting():
+            for _ in range(int(VOICE_CONNECT_TIMEOUT / VOICE_CONNECT_POLL_INTERVAL)):
+                if ctx.voice_client.is_connected():
+                    if ctx.author.voice and ctx.author.voice.channel != ctx.voice_client.channel:
+                        await ctx.voice_client.move_to(ctx.author.voice.channel)
+                    return True
+                await asyncio.sleep(VOICE_CONNECT_POLL_INTERVAL)
+        if not ctx.voice_client.is_connected():
+            await ctx.voice_client.disconnect(force=True)
 
     if not ctx.author.voice or not ctx.author.voice.channel:
         await ctx.send("You need to be in a voice channel first.")
@@ -105,14 +121,24 @@ async def ensure_voice(ctx) -> bool:
     last_error = None
     for attempt in range(VOICE_CONNECT_RETRIES):
         try:
-            await channel.connect()
+            await channel.connect(reconnect=True, timeout=VOICE_CONNECT_TIMEOUT, self_deaf=True)
             return True
         except discord.ClientException:
             if ctx.voice_client and ctx.voice_client.is_connected():
                 return True
             last_error = "Connection already in progress."
+        except discord.errors.ConnectionClosed as exc:
+            last_error = f"Voice websocket closed ({exc.code})."
+            if exc.code == 4006:
+                try:
+                    await channel.connect(reconnect=False, timeout=VOICE_CONNECT_TIMEOUT, self_deaf=True)
+                    return True
+                except Exception as retry_exc:
+                    last_error = f"Voice websocket closed ({exc.code}); retry failed: {retry_exc}"
         except Exception as exc:
             last_error = str(exc)
+        if ctx.voice_client:
+            await ctx.voice_client.disconnect(force=True)
         await asyncio.sleep(VOICE_CONNECT_DELAY)
 
     message = "I couldn't connect to the voice channel."
