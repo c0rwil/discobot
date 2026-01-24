@@ -9,7 +9,7 @@ description = "Discord music bot."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "discord.py>=2.3.2",
+  "discord.py",
   "dotenv",
   "yt-dlp",
   "pynacl,
