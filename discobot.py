@@ -50,6 +50,8 @@ volume_level = 1.0  # Default volume level (100%)
 executor = ThreadPoolExecutor(max_workers=5)
 VOICE_CONNECT_RETRIES = 3
 VOICE_CONNECT_DELAY = 1.5
+VOICE_CONNECT_TIMEOUT = 10
+VOICE_CONNECT_POLL_INTERVAL = 0.5
 
 
 def shorten_url(url: str) -> str:
@@ -97,6 +99,16 @@ async def ensure_voice(ctx) -> bool:
     if ctx.voice_client and ctx.voice_client.is_connected():
         return True
 
+    if ctx.voice_client:
+        is_connecting = getattr(ctx.voice_client, "is_connecting", None)
+        if callable(is_connecting) and is_connecting():
+            for _ in range(int(VOICE_CONNECT_TIMEOUT / VOICE_CONNECT_POLL_INTERVAL)):
+                if ctx.voice_client.is_connected():
+                    return True
+                await asyncio.sleep(VOICE_CONNECT_POLL_INTERVAL)
+        if not ctx.voice_client.is_connected():
+            await ctx.voice_client.disconnect(force=True)
+
     if not ctx.author.voice or not ctx.author.voice.channel:
         await ctx.send("You need to be in a voice channel first.")
         return False
@@ -105,14 +117,18 @@ async def ensure_voice(ctx) -> bool:
     last_error = None
     for attempt in range(VOICE_CONNECT_RETRIES):
         try:
-            await channel.connect()
+            await channel.connect(reconnect=True, timeout=20)
             return True
         except discord.ClientException:
             if ctx.voice_client and ctx.voice_client.is_connected():
                 return True
             last_error = "Connection already in progress."
+        except discord.errors.ConnectionClosed as exc:
+            last_error = f"Voice websocket closed ({exc.code})."
         except Exception as exc:
             last_error = str(exc)
+        if ctx.voice_client:
+            await ctx.voice_client.disconnect(force=True)
         await asyncio.sleep(VOICE_CONNECT_DELAY)
 
     message = "I couldn't connect to the voice channel."
