@@ -93,6 +93,35 @@ def build_queue_entries(info: dict) -> list[dict]:
     return []
 
 
+async def ensure_voice(ctx) -> bool:
+    if ctx.voice_client and ctx.voice_client.is_connected():
+        return True
+
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        await ctx.send("You need to be in a voice channel first.")
+        return False
+
+    channel = ctx.author.voice.channel
+    last_error = None
+    for attempt in range(VOICE_CONNECT_RETRIES):
+        try:
+            await channel.connect()
+            return True
+        except discord.ClientException:
+            if ctx.voice_client and ctx.voice_client.is_connected():
+                return True
+            last_error = "Connection already in progress."
+        except Exception as exc:
+            last_error = str(exc)
+        await asyncio.sleep(VOICE_CONNECT_DELAY)
+
+    message = "I couldn't connect to the voice channel."
+    if last_error:
+        message = f"{message} ({last_error})"
+    await ctx.send(message)
+    return False
+
+
 @bot.command()
 async def join(ctx):
     await ensure_voice(ctx)
