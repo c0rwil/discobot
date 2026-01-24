@@ -70,34 +70,6 @@ async def fetch_info(query: str) -> dict:
     return await run_blocking_task(_extract)
 
 
-async def ensure_voice(ctx) -> bool:
-    if not ctx.author.voice:
-        await ctx.send("You need to be in a voice channel.")
-        return False
-
-    channel = ctx.author.voice.channel
-    if ctx.voice_client and ctx.voice_client.channel == channel:
-        return True
-
-    if ctx.voice_client:
-        await ctx.voice_client.move_to(channel)
-        return True
-
-    for attempt in range(1, VOICE_CONNECT_RETRIES + 1):
-        try:
-            await channel.connect(timeout=20, reconnect=True)
-            return True
-        except (discord.errors.ConnectionClosed, asyncio.TimeoutError, discord.ClientException) as exc:
-            print(f"Voice connect failed (attempt {attempt}): {exc}")
-            if ctx.voice_client:
-                await ctx.voice_client.disconnect(force=True)
-            if attempt < VOICE_CONNECT_RETRIES:
-                await asyncio.sleep(VOICE_CONNECT_DELAY)
-
-    await ctx.send("Failed to connect to voice. Check bot permissions and try again.")
-    return False
-
-
 def build_queue_entries(info: dict) -> list[dict]:
     if 'entries' not in info:
         return [{
