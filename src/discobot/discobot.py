@@ -54,6 +54,9 @@ VOICE_CONNECT_RETRIES = 3
 VOICE_CONNECT_DELAY = 1.5
 VOICE_CONNECT_TIMEOUT = 10
 VOICE_CONNECT_POLL_INTERVAL = 0.5
+SEARCH_RESULTS_LIMIT = 5
+SEARCH_REACTION_TIMEOUT = 30
+SEARCH_CHOICE_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 
 
 def shorten_url(url: str) -> str:
@@ -70,6 +73,14 @@ async def fetch_info(query: str) -> dict:
     def _extract():
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
+
+    return await run_blocking_task(_extract)
+
+
+async def fetch_search_results(query: str, max_results: int) -> dict:
+    def _extract():
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
 
     return await run_blocking_task(_extract)
 
@@ -103,6 +114,60 @@ def build_queue_entries(info: dict) -> list[dict]:
             }
         ]
     return []
+
+
+def build_search_entries(info: dict, limit: int) -> list[dict]:
+    entries = [entry for entry in info.get("entries", []) if entry]
+    search_entries = []
+    for entry in entries:
+        url = entry.get("webpage_url") or entry.get("url")
+        if not url:
+            continue
+        search_entries.append(
+            {
+                "url": url,
+                "title": entry.get("title") or "Unknown title",
+            }
+        )
+        if len(search_entries) >= limit:
+            break
+    return search_entries
+
+
+async def prompt_search_selection(ctx, entries: list[dict]) -> dict | None:
+    lines = []
+    for idx, entry in enumerate(entries, start=1):
+        lines.append(f"{idx}. {entry['title']} ({shorten_url(entry['url'])})")
+    prompt = (
+        "Select a result by reacting with 1-5:\n"
+        + "\n".join(lines)
+    )
+    message = await ctx.send(prompt)
+    for emoji in SEARCH_CHOICE_EMOJIS[: len(entries)]:
+        await message.add_reaction(emoji)
+
+    def check(reaction, user):
+        return (
+            reaction.message.id == message.id
+            and user.id == ctx.author.id
+            and str(reaction.emoji) in SEARCH_CHOICE_EMOJIS
+        )
+
+    try:
+        reaction, _user = await bot.wait_for(
+            "reaction_add",
+            timeout=SEARCH_REACTION_TIMEOUT,
+            check=check,
+        )
+    except asyncio.TimeoutError:
+        await ctx.send("Selection timed out. Run the command again to search.")
+        return None
+
+    choice_index = SEARCH_CHOICE_EMOJIS.index(str(reaction.emoji))
+    if choice_index >= len(entries):
+        await ctx.send("That selection isn't available.")
+        return None
+    return entries[choice_index]
 
 
 async def ensure_voice(ctx) -> bool:
@@ -178,6 +243,24 @@ async def play(ctx, *, query: str):
         return
 
     try:
+        is_url = re.match(r"^https?://", query.strip(), re.IGNORECASE)
+        if not is_url:
+            info = await fetch_search_results(query, SEARCH_RESULTS_LIMIT)
+            entries = build_search_entries(info, SEARCH_RESULTS_LIMIT)
+            if not entries:
+                await ctx.send("No results found.")
+                return
+
+            selected = await prompt_search_selection(ctx, entries)
+            if not selected:
+                return
+
+            song_queue.append(selected)
+            await ctx.send(f"Added to queue: {selected['title']} ({shorten_url(selected['url'])})")
+            if not ctx.voice_client.is_playing():
+                await play_next(ctx)
+            return
+
         info = await fetch_info(query)
         entries = build_queue_entries(info)
         if not entries:
